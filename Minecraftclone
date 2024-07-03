@@ -1,0 +1,674 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Enhanced Minecraft Clone with Pig</title>
+    <style>
+        body { margin: 0; overflow: hidden; }
+        canvas { width: 100%; height: 100%; }
+        #crosshair { position: absolute; top: 50%; left: 50%; width: 20px; height: 20px; margin: -10px 0 0 -10px; color: white; font-size: 20px; text-align: center; pointer-events: none; }
+        #hud { position: absolute; bottom: 10px; left: 10px; background: rgba(0,0,0,0.5); color: white; padding: 10px; }
+        #inventory { display: flex; }
+        .inv-slot { width: 40px; height: 40px; border: 2px solid #fff; margin-right: 5px; display: flex; align-items: center; justify-content: center; font-weight: bold; }
+        #hunger-bar { width: 180px; height: 20px; background: #333; margin-top: 5px; }
+        #hunger-fill { height: 100%; background: #8B4513; transition: width 0.3s; }
+    </style>
+</head>
+<body>
+    <canvas id="gameCanvas"></canvas>
+    <div id="crosshair">+</div>
+    <div id="hud">
+        <div id="inventory"></div>
+        <div id="hunger-bar"><div id="hunger-fill"></div></div>
+    </div>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/simplex-noise/2.4.0/simplex-noise.min.js"></script>
+    <script>
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('gameCanvas'), antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setClearColor(0x87CEEB); // Sky blue color
+
+        // Textures and Materials
+        const textureLoader = new THREE.TextureLoader();
+        const blockTextures = {
+            dirt: createMinecraftTexture(0x8B4513),
+            grass_top: createMinecraftTexture(0x7CFC00),
+            grass_side: createGrassSideTexture(),
+            stone: createMinecraftTexture(0x808080),
+            wood: createWoodTexture(),
+            leaves: createMinecraftTexture(0x228B22, true),
+            water: createWaterTexture(),
+            sand: createMinecraftTexture(0xF4A460),
+        };
+
+        function createMinecraftTexture(color, transparent = false) {
+            const canvas = document.createElement('canvas');
+            canvas.width = 16;
+            canvas.height = 16;
+            const ctx = canvas.getContext('2d');
+            ctx.fillStyle = `#${color.toString(16).padStart(6, '0')}`;
+            ctx.fillRect(0, 0, 16, 16);
+
+            // Add noise
+            for (let x = 0; x < 16; x++) {
+                for (let y = 0; y < 16; y++) {
+                    if (Math.random() > 0.8) {
+                        ctx.fillStyle = `rgba(0,0,0,0.1)`;
+                        ctx.fillRect(x, y, 1, 1);
+                    }
+                }
+            }
+
+            const texture = new THREE.CanvasTexture(canvas);
+            texture.magFilter = THREE.NearestFilter;
+            texture.minFilter = THREE.NearestFilter;
+            if (transparent) {
+                texture.transparent = true;
+            }
+            return texture;
+        }
+
+        function createGrassSideTexture() {
+            const canvas = document.createElement('canvas');
+            canvas.width = 16;
+            canvas.height = 16;
+            const ctx = canvas.getContext('2d');
+            ctx.fillStyle = '#8B4513'; // Dirt color
+            ctx.fillRect(0, 0, 16, 16);
+            ctx.fillStyle = '#7CFC00'; // Grass color
+            ctx.fillRect(0, 12, 16, 4);
+
+            const texture = new THREE.CanvasTexture(canvas);
+            texture.magFilter = THREE.NearestFilter;
+            texture.minFilter = THREE.NearestFilter;
+            return texture;
+        }
+
+        function createWoodTexture() {
+            const canvas = document.createElement('canvas');
+            canvas.width = 16;
+            canvas.height = 16;
+            const ctx = canvas.getContext('2d');
+            ctx.fillStyle = '#8B4513'; // Wood color
+            ctx.fillRect(0, 0, 16, 16);
+            ctx.fillStyle = '#4B2809'; // Darker wood color for rings
+            for (let i = 0; i < 16; i += 4) {
+                ctx.fillRect(0, i, 16, 2);
+            }
+
+            const texture = new THREE.CanvasTexture(canvas);
+            texture.magFilter = THREE.NearestFilter;
+            texture.minFilter = THREE.NearestFilter;
+            return texture;
+        }
+
+        function createWaterTexture() {
+            const canvas = document.createElement('canvas');
+            canvas.width = 16;
+            canvas.height = 16;
+            const ctx = canvas.getContext('2d');
+            ctx.fillStyle = '#4169E1'; // Water color
+            ctx.fillRect(0, 0, 16, 16);
+            ctx.fillStyle = 'rgba(255,255,255,0.3)'; // Light reflections
+            ctx.fillRect(0, 0, 8, 8);
+            ctx.fillRect(8, 8, 8, 8);
+
+            const texture = new THREE.CanvasTexture(canvas);
+            texture.magFilter = THREE.NearestFilter;
+            texture.minFilter = THREE.NearestFilter;
+            texture.transparent = true;
+            return texture;
+        }
+
+        const blockMaterials = {};
+        for (const [name, texture] of Object.entries(blockTextures)) {
+            blockMaterials[name] = new THREE.MeshLambertMaterial({ map: texture });
+        }
+
+        blockMaterials['grass'] = [
+            blockMaterials['grass_side'],
+            blockMaterials['grass_side'],
+            blockMaterials['grass_top'],
+            blockMaterials['dirt'],
+            blockMaterials['grass_side'],
+            blockMaterials['grass_side']
+        ];
+
+        blockMaterials['water'].transparent = true;
+        blockMaterials['water'].opacity = 0.8;
+
+        // Lighting
+        const ambientLight = new THREE.AmbientLight(0xcccccc, 0.5);
+        scene.add(ambientLight);
+        const directionalLight = new THREE.DirectionalLight(0xffffff, 0.6);
+        directionalLight.position.set(1, 1, 0.5);
+        scene.add(directionalLight);
+
+        // World generation
+        const worldSize = 64;
+        const chunkSize = 16;
+        const blockSize = 1;
+        const simplex = new SimplexNoise();
+
+        const blocks = {};
+
+        function generateChunk(chunkX, chunkZ) {
+            for (let x = 0; x < chunkSize; x++) {
+                for (let z = 0; z < chunkSize; z++) {
+                    const worldX = chunkX * chunkSize + x;
+                    const worldZ = chunkZ * chunkSize + z;
+                    const height = Math.floor(
+                        (simplex.noise2D(worldX * 0.02, worldZ * 0.02) + 1) * 0.5 * 16
+                    ) + 1;
+
+                    for (let y = 0; y < height; y++) {
+                        let blockType;
+                        if (y === height - 1) {
+                            if (height < 5) {
+                                blockType = 'sand';
+                            } else {
+                                blockType = 'grass';
+                            }
+                        } else if (y > height - 4) {
+                            blockType = 'dirt';
+                        } else {
+                            blockType = 'stone';
+                        }
+
+                        placeBlock(worldX, y, worldZ, blockType);
+                    }
+
+                    // Water level
+                    const waterLevel = 4;
+                    if (height < waterLevel) {
+                        for (let y = height; y < waterLevel; y++) {
+                            placeBlock(worldX, y, worldZ, 'water');
+                        }
+                    }
+
+                    // Randomly place trees
+                    if (Math.random() < 0.02 && height > waterLevel && height < 15) {
+                        placeTree(worldX, height, worldZ);
+                    }
+                }
+            }
+        }
+
+        function placeTree(x, y, z) {
+            const trunkHeight = Math.floor(Math.random() * 3) + 4;
+            for (let i = 0; i < trunkHeight; i++) {
+                placeBlock(x, y + i, z, 'wood');
+            }
+
+            for (let dx = -2; dx <= 2; dx++) {
+                for (let dz = -2; dz <= 2; dz++) {
+                    for (let dy = 0; dy < 3; dy++) {
+                        if (Math.abs(dx) + Math.abs(dz) + Math.abs(dy) < 4) {
+                            placeBlock(x + dx, y + trunkHeight + dy, z + dz, 'leaves');
+                        }
+                    }
+                }
+            }
+        }
+
+        function placeBlock(x, y, z, blockType) {
+            const key = `${x},${y},${z}`;
+            if (blocks[key]) {
+                scene.remove(blocks[key]);
+            }
+            const geometry = new THREE.BoxGeometry(blockSize, blockSize, blockSize);
+            const material = Array.isArray(blockMaterials[blockType]) ? blockMaterials[blockType] : blockMaterials[blockType];
+            const block = new THREE.Mesh(geometry, material);
+            block.position.set(x * blockSize, y * blockSize, z * blockSize);
+            scene.add(block);
+            blocks[key] = block;
+        }
+
+        // Player physics
+        const player = {
+            height: 1.8,
+            eyeHeight: 1.6,
+            radius: 0.3,
+            position: new THREE.Vector3(worldSize / 2, 20, worldSize / 2),
+            velocity: new THREE.Vector3(),
+            onGround: false,
+            canJump: false,
+            hunger: 100
+        };
+
+        const gravity = -20;
+        const jumpStrength = 8;
+        const moveSpeed = 100;
+
+        // Inventory system
+        const inventory = ['grass', 'dirt', 'stone', 'wood', 'leaves', 'sand'];
+        let selectedSlot = 0;
+
+        function updateInventoryDisplay() {
+            const invElement = document.getElementById('inventory');
+            invElement.innerHTML = '';
+            inventory.forEach((block, index) => {
+                const slot = document.createElement('div');
+                slot.className = 'inv-slot';
+                slot.textContent = block.charAt(0).toUpperCase();
+                if (index === selectedSlot) {
+                    slot.style.backgroundColor = 'rgba(255,255,255,0.3)';
+                }
+                invElement.appendChild(slot);
+            });
+        }
+
+        updateInventoryDisplay();
+
+        // Hunger system
+        function updateHunger() {
+            player.hunger = Math.max(0, player.hunger - 0.01);
+            const hungerFill = document.getElementById('hunger-fill');
+            hungerFill.style.width = `${player.hunger}%`;
+
+            if (player.hunger <= 0) {
+                // Player starts losing health when hunger is depleted
+                // Implement health system here
+            }
+        }
+
+        setInterval(updateHunger, 1000);
+
+        // Controls
+        let moveForward = false;
+        let moveBackward = false;
+        let moveLeft = false;
+        let moveRight = false;
+        let jump = false;
+
+        document.addEventListener('keydown', onKeyDown);
+        document.addEventListener('keyup', onKeyUp);
+
+        function onKeyDown(event) {
+            switch (event.code) {
+                case 'KeyW': moveForward = true; break;
+                case 'KeyS': moveBackward = true; break;
+                case 'KeyA': moveLeft = true; break;
+                case 'KeyD': moveRight = true; break;
+                case 'Space': jump = true; break;
+            }
+        }
+
+        function onKeyUp(event) {
+            switch (event.code) {
+                case 'KeyW': moveForward = false; break;
+                case 'KeyS': moveBackward = false; break;
+                case 'KeyA': moveLeft = false; break;
+                case 'KeyD': moveRight = false; break;
+                case 'Space': jump = false; break;
+            }
+        }
+
+        // Mouse look
+        let yaw = 0;
+        let pitch = 0;
+        document.addEventListener('mousemove', (event) => {
+            yaw -= event.movementX * 0.002;
+            pitch -= event.movementY * 0.002;
+            pitch = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, pitch));
+        });
+
+        document.addEventListener('click', () => {
+            document.body.requestPointerLock();
+        });
+
+        // Block interaction
+        function raycast() {
+            const raycaster = new THREE.Raycaster();
+            const direction = new THREE.Vector3();
+            camera.getWorldDirection(direction);
+            raycaster.set(camera.position, direction);
+
+            const intersects = raycaster.intersectObjects(Object.values(blocks));
+            if (intersects.length > 0) {
+                return intersects[0];
+            }
+            return null;
+        }
+
+        document.addEventListener('mousedown', (event) => {
+            const intersect = raycast();
+            if (intersect) {
+                if (event.button === 0) { // Left click: destroy block
+                    const key = `${Math.round(intersect.object.position.x)},${Math.round(intersect.object.position.y)},${Math.round(intersect.object.position.z)}`;
+                    scene.remove(intersect.object);
+                    delete blocks[key];
+                    player.hunger = Math.min(100, player.hunger + 1); // Increase hunger when breaking blocks
+                } else if (event.button === 2) { // Right click: place block
+                    const pos = intersect.point.add(intersect.face.normal.multiplyScalar(0.5));
+                    placeBlock(Math.round(pos.x), Math.round(pos.y), Math.round(pos.z), inventory[selectedSlot]);
+                    player.hunger = Math.min(100, player.hunger + 0.5); // Increase hunger when placing blocks
+                }
+                updateHunger();
+            }
+        });
+
+        document.addEventListener('wheel', (event) => {
+            selectedSlot = (selectedSlot - Math.sign(event.deltaY) + inventory.length) % inventory.length;
+            updateInventoryDisplay();
+        });
+
+        document.addEventListener('contextmenu', (event) => event.preventDefault());
+
+        function checkCollision(pos) {
+            const positions = [
+                [0, 0, 0],
+                [0, player.height, 0],
+                [player.radius, player.height / 2, player.radius],
+                [player.radius, player.height / 2, -player.radius],
+                [-player.radius, player.height / 2, player.radius],
+                [-player.radius, player.height / 2, -player.radius]
+            ];
+
+            for (const [dx, dy, dz] of positions) {
+                const x = Math.floor(pos.x + dx);
+                const y = Math.floor(pos.y + dy);
+                const z = Math.floor(pos.z + dz);
+                if (blocks[`${x},${y},${z}`] && blocks[`${x},${y},${z}`].material !== blockMaterials['water']) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        // Pig Model and Animation
+        class Pig {
+            constructor(x, y, z) {
+                this.group = new THREE.Group();
+                this.position = new THREE.Vector3(x, y, z);
+                this.velocity = new THREE.Vector3();
+                this.onGround = false;
+                this.moveSpeed = 20;
+                this.turnSpeed = 5;
+                this.targetDirection = new THREE.Vector3(Math.random() - 0.5, 0, Math.random() - 0.5).normalize();
+                this.nextDirectionChange = 0;
+
+                // Create pig body
+                const bodyGeometry = new THREE.BoxGeometry(0.8, 0.6, 1.2);
+                const bodyMaterial = new THREE.MeshLambertMaterial({ color: 0xFFC0CB }); // Pink color
+                this.body = new THREE.Mesh(bodyGeometry, bodyMaterial);
+                this.group.add(this.body);
+
+                // Create pig head
+                const headGeometry = new THREE.BoxGeometry(0.6, 0.6, 0.6);
+                this.head = new THREE.Mesh(headGeometry, bodyMaterial);
+                this.head.position.set(0, 0.3, 0.6);
+                this.group.add(this.head);
+
+                // Create pig legs
+                const legGeometry = new THREE.BoxGeometry(0.2, 0.4, 0.2);
+                this.legs = [];
+                const legPositions = [
+                    [-0.3, -0.5, 0.4],
+                    [0.3, -0.5, 0.4],
+                    [-0.3, -0.5, -0.4],
+                    [0.3, -0.5, -0.4]
+                ];
+                for (const [x, y, z] of legPositions) {
+                    const leg = new THREE.Mesh(legGeometry, bodyMaterial);
+                    leg.position.set(x, y, z);
+                    this.group.add(leg);
+                    this.legs.push(leg);
+                }
+
+                // Create pig snout
+                const snoutGeometry = new THREE.BoxGeometry(0.3, 0.3, 0.1);
+                const snoutMaterial = new THREE.MeshLambertMaterial({ color: 0xFFB6C1 }); // Lighter pink
+                const snout = new THREE.Mesh(snoutGeometry, snoutMaterial);
+                snout.position.set(0, 0.1, 0.35);
+                this.head.add(snout);
+
+                this.group.position.copy(this.position);
+                scene.add(this.group);
+            }
+
+            update(delta) {
+                // Update pig position and apply gravity
+                this.velocity.y += gravity * delta;
+
+                if (Date.now() > this.nextDirectionChange) {
+                    this.targetDirection.set(Math.random() - 0.5, 0, Math.random() - 0.5).normalize();
+                    this.nextDirectionChange = Date.now() + Math.random() * 5000 + 2000; // Change direction every 2-7 seconds
+                }
+
+                // Move towards target direction
+                const movement = this.targetDirection.clone().multiplyScalar(this.moveSpeed * delta);
+                this.velocity.x = movement.x;
+                this.velocity.z = movement.z;
+
+                const newPosition = this.position.clone().add(this.velocity.clone().multiplyScalar(delta));
+
+                // Check for collisions and adjust position
+                if (!checkCollision(newPosition)) {
+                    this.position.copy(newPosition);
+                } else {
+                    if (!checkCollision(new THREE.Vector3(newPosition.x, this.position.y, this.position.z))) {
+                        this.position.x = newPosition.x;
+                        this.position.z = newPosition.z;
+                        this.velocity.y = Math.max(0, this.velocity.y);
+                    } else if (!checkCollision(new THREE.Vector3(this.position.x, newPosition.y, this.position.z))) {
+                        this.position.y = newPosition.y;
+                        this.velocity.x = 0;
+                        this.velocity.z = 0;
+                    } else if (!checkCollision(new THREE.Vector3(this.position.x, this.position.y, newPosition.z))) {
+                        this.position.z = newPosition.z;
+                        this.velocity.x = 0;
+                        this.velocity.y = Math.max(0, this.velocity.y);
+                    }
+                }
+
+                // Check if pig is on ground
+                this.onGround = checkCollision(new THREE.Vector3(this.position.x, this.position.y - 0.1, this.position.z));
+
+                if (this.onGround) {
+                    this.velocity.y = Math.max(0, this.velocity.y);
+                }
+
+                // Update pig group position
+                this.group.position.copy(this.position);
+
+                // Rotate pig towards movement direction
+                if (this.velocity.x !== 0 || this.velocity.z !== 0) {
+                    const angle = Math.atan2(this.velocity.x, this.velocity.z);
+                    this.group.rotation.y = angle;
+                }
+
+                // Animate legs and head
+                const walkCycle = (Date.now() % 1000) / 1000; // 0 to 1 over 1 second
+                const walkAngle = Math.sin(walkCycle * Math.PI * 2) * 0.2;
+
+                this.legs[0].rotation.x = walkAngle;
+                this.legs[1].rotation.x = -walkAngle;
+                this.legs[2].rotation.x = -walkAngle;
+                this.legs[3].rotation.x = walkAngle;
+
+                this.head.rotation.x = Math.sin(walkCycle * Math.PI) * 0.05;
+            }
+        }
+
+        const pigs = [];
+        for (let i = 0; i < 5; i++) {
+            const x = Math.random() * worldSize;
+            const z = Math.random() * worldSize;
+            const y = 20; // Start high and let gravity pull them down
+            pigs.push(new Pig(x, y, z));
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+
+            const delta = Math.min(1 / 30, clock.getDelta());
+
+            // Update player position and apply gravity
+            player.velocity.y += gravity * delta;
+
+            if (player.onGround && jump) {
+                player.velocity.y = jumpStrength;
+            }
+
+            const cameraDir = new THREE.Vector3();
+            camera.getWorldDirection(cameraDir);
+            cameraDir.y = 0;
+            cameraDir.normalize();
+
+            const sideDir = new THREE.Vector3(-cameraDir.z, 0, cameraDir.x);
+
+            const moveDir = new THREE.Vector3();
+            if (moveForward) moveDir.add(cameraDir);
+            if (moveBackward) moveDir.sub(cameraDir);
+            if (moveRight) moveDir.add(sideDir);
+            if (moveLeft) moveDir.sub(sideDir);
+            moveDir.normalize().multiplyScalar(moveSpeed * delta);
+
+            player.velocity.x = moveDir.x;
+            player.velocity.z = moveDir.z;
+
+            const newPosition = player.position.clone().add(player.velocity.clone().multiplyScalar(delta));
+
+            // Check for collisions and adjust position
+            if (!checkCollision(newPosition)) {
+                player.position.copy(newPosition);
+            } else {
+                if (!checkCollision(new THREE.Vector3(newPosition.x, player.position.y, player.position.z))) {
+                    player.position.x = newPosition.x;
+                    player.position.z = newPosition.z;
+                    player.velocity.y = Math.max(0, player.velocity.y);
+                } else if (!checkCollision(new THREE.Vector3(player.position.x, newPosition.y, player.position.z))) {
+                    player.position.y = newPosition.y;
+                    player.velocity.x = 0;
+                    player.velocity.z = 0;
+                } else if (!checkCollision(new THREE.Vector3(player.position.x, player.position.y, newPosition.z))) {
+                    player.position.z = newPosition.z;
+                    player.velocity.x = 0;
+                    player.velocity.y = Math.max(0, player.velocity.y);
+                }
+            }
+
+            // Check if player is on ground
+            player.onGround = checkCollision(new THREE.Vector3(player.position.x, player.position.y - 0.1, player.position.z));
+
+            if (player.onGround) {
+                player.velocity.y = Math.max(0, player.velocity.y);
+            }
+
+            // Update camera position
+            camera.position.copy(player.position);
+            camera.position.y += player.eyeHeight;
+
+            // Update camera rotation
+            camera.rotation.order = 'YXZ';
+            camera.rotation.x = pitch;
+            camera.rotation.y = yaw;
+
+            // Update pigs
+            for (const pig of pigs) {
+                pig.update(delta);
+            }
+
+            // Day/night cycle
+            const dayDuration = 600; // 10 minutes in seconds
+            const time = (Date.now() / 1000) % dayDuration;
+            const dayTime = time / dayDuration;
+
+            // Update sky color
+            const skyColor = new THREE.Color();
+            if (dayTime < 0.25) { // Night
+                skyColor.setRGB(0.1, 0.1, 0.3);
+            } else if (dayTime < 0.3) { // Sunrise
+                const t = (dayTime - 0.25) / 0.05;
+                skyColor.setRGB(0.1 + 0.5 * t, 0.1 + 0.7 * t, 0.3 + 0.7 * t);
+            } else if (dayTime < 0.7) { // Day
+                skyColor.setRGB(0.6, 0.8, 1);
+            } else if (dayTime < 0.75) { // Sunset
+                const t = (dayTime - 0.7) / 0.05;
+                skyColor.setRGB(0.6 + 0.4 * t, 0.8 - 0.5 * t, 1 - 0.7 * t);
+            } else { // Night
+                skyColor.setRGB(0.1, 0.1, 0.3);
+            }
+            renderer.setClearColor(skyColor);
+
+            // Update lighting
+            const lightIntensity = Math.sin(dayTime * Math.PI) * 0.5 + 0.5;
+            directionalLight.intensity = lightIntensity;
+            ambientLight.intensity = 0.2 + lightIntensity * 0.3;
+
+            // Fog
+            const fogNear = 20;
+            const fogFar = 80;
+            scene.fog = new THREE.Fog(skyColor, fogNear, fogFar);
+
+            renderer.render(scene, camera);
+
+            // Update chunks
+            updateChunks();
+        }
+
+        const clock = new THREE.Clock();
+
+        // Handle window resizing
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        // Chunk loading system
+        const loadedChunks = {};
+        const renderDistance = 8;
+
+        function updateChunks() {
+            const playerChunkX = Math.floor(player.position.x / (chunkSize * blockSize));
+            const playerChunkZ = Math.floor(player.position.z / (chunkSize * blockSize));
+
+            for (let x = playerChunkX - renderDistance; x <= playerChunkX + renderDistance; x++) {
+                for (let z = playerChunkZ - renderDistance; z <= playerChunkZ + renderDistance; z++) {
+                    if (x >= 0 && x < worldSize / chunkSize && z >= 0 && z < worldSize / chunkSize) {
+                        const chunkKey = `${x},${z}`;
+                        if (!loadedChunks[chunkKey]) {
+                            generateChunk(x, z);
+                            loadedChunks[chunkKey] = true;
+                        }
+                    }
+                }
+            }
+
+            // Unload distant chunks
+            for (const chunkKey in loadedChunks) {
+                const [x, z] = chunkKey.split(',').map(Number);
+                if (Math.abs(x - playerChunkX) > renderDistance + 2 || Math.abs(z - playerChunkZ) > renderDistance + 2) {
+                    unloadChunk(x, z);
+                    delete loadedChunks[chunkKey];
+                }
+            }
+        }
+
+        function unloadChunk(chunkX, chunkZ) {
+                    for (let x = 0; x < chunkSize; x++) {
+                        for (let z = 0; z < chunkSize; z++) {
+                            for (let y = 0; y < 256; y++) {
+                                const worldX = chunkX * chunkSize + x;
+                                const worldZ = chunkZ * chunkSize + z;
+                                const key = `${worldX},${y},${worldZ}`;
+                                if (blocks[key]) {
+                                    scene.remove(blocks[key]);
+                                    delete blocks[key];
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Start the game
+                generateChunk(Math.floor(worldSize / (2 * chunkSize)), Math.floor(worldSize / (2 * chunkSize)));
+                animate();
+            </script>
+        </body>
+        </html>
